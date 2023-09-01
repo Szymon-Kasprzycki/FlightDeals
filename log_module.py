@@ -14,7 +14,7 @@ class ProjectLogger:
     It uses static methods to create a logger for the main file and for each module.
     """
     project_name = 'FlightsDeal'
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter("%(asctime)s %(name)-30s %(levelname)-8s %(message)s")
     ch = logging.StreamHandler()
     ch.setLevel(CONSOLE_HANDLER_LEVEL)
     ch.setFormatter(formatter)

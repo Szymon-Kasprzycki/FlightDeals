@@ -19,7 +19,7 @@ class DataManager:
     API_VERSION = "v4"
     CLIENT_SECRET_FILE = "client_secret.json"
     TOKEN_FILE = "token.json"
-    AVAILABE_RANGE = 'A1:B1000'
+    AVAILABE_RANGE = 'A:B'
 
     def __init__(self, spreadsheet_id: str):
         # create new logger for DataManager
@@ -76,7 +76,74 @@ class DataManager:
             raise ValueError('No cells specified')
 
         # Add sheet id to the range, so it looks like 'Sheet1!A1:B2'
-        return f'{sheet_id}!{cells}'
+        return f'\'{sheet_id}\'!{cells}'
+
+    @staticmethod
+    def _prepare_sheet_id(start_location: str) -> str:
+        """
+        This method prepares the sheet id for the Google Sheet API
+        :param start_location: start location IATA code
+        :return: Ready to use sheet id for application e.g. 'FROM_GDA'
+        """
+        return f'FROM_{start_location}'
+
+    def _create_sheet(self, sheet_id: str) -> bool:
+        """
+        This method creates the sheet in the connected Google spreadsheet
+        :param sheet_id: Sheet id to be created e.g. 'Sheet1'
+        :return: True if sheet was created, False otherwise
+        """
+        status = False
+
+        self.logger.debug(f'Creating sheet {sheet_id}')
+
+        try:
+            # Call the Sheets API to create the sheet
+            self.logger.debug(f'Calling Sheets API to create sheet {sheet_id}')
+            self.sheet.batchUpdate(spreadsheetId=self.spreadsheet_id, body={
+                'requests': [
+                    {
+                        'addSheet': {
+                            'properties': {
+                                'title': sheet_id
+                            }
+                        }
+                    }
+                ]
+            }).execute()
+            status = True
+        except HttpError as err:
+            self.logger.error(err)
+
+        return status
+
+    def _check_if_sheet_exists(self, sheet_id: str) -> bool:
+        """
+        This method checks if the sheet exists in the connected Google spreadsheet
+        :param sheet_id: Sheet id to be checked e.g. 'Sheet1'
+        :return: True if sheet exists, False otherwise
+        """
+        status = False
+
+        self.logger.debug(f'Checking if sheet {sheet_id} exists')
+
+        # Call the Sheets API to get the list of sheets
+        try:
+            self.logger.debug(f'Calling Sheets API to get the list of sheets')
+            result = self.sheet.get(spreadsheetId=self.spreadsheet_id).execute()
+            sheets = result.get('sheets', [])
+            self.logger.debug(f'{len(sheets)} sheets found')
+        except HttpError as err:
+            self.logger.error(err)
+            sheets = []
+
+        # Check if sheet exists
+        for sheet in sheets:
+            if sheet['properties']['title'] == sheet_id:
+                status = True
+                break
+
+        return status
 
     def _append_data(self, sheet_id: str, new_values: list) -> bool:
         """
@@ -92,10 +159,13 @@ class DataManager:
         # Add sheet id to the range, so it looks like 'Sheet1!A1:B2'
         data_range = self._prepare_range(sheet_id, DataManager.AVAILABE_RANGE)
 
+        self.logger.debug(f'Calling Sheets API to append data to {data_range}')
+
         try:
             # Call the Sheets API to append the data
             self.sheet.values().append(spreadsheetId=self.spreadsheet_id, range=data_range,
-                                       valueInputOption='USER_ENTERED', body={'values': new_values}).execute()
+                                       valueInputOption='USER_ENTERED', insertDataOption='INSERT_ROWS',
+                                       body={'values': new_values}).execute()
             status = True
         except HttpError as err:
             self.logger.error(err)
@@ -141,6 +211,13 @@ class DataManager:
         try:
             # Call the Sheets API to read the data
             self.logger.debug('Calling Sheets API to access data')
+
+            # Check if sheet exists
+            sheet_id = cells_range.split("!")[0].replace('\'', '')
+            if not self._check_if_sheet_exists(sheet_id):
+                self.logger.error(f'Sheet `{sheet_id}` does not exist')
+                return []
+
             result = self.sheet.values().get(spreadsheetId=self.spreadsheet_id, range=cells_range).execute()
             values = result.get('values', [])
         except HttpError as err:
@@ -156,7 +233,8 @@ class DataManager:
         """
         self.logger.debug(f'Reading flights amount for {start_location}...')
         # Call the Sheets API to read the data
-        read_range = self._prepare_range(f'FROM: {start_location}', DataManager.AVAILABE_RANGE)
+        sheet_id = self._prepare_sheet_id(start_location)
+        read_range = self._prepare_range(sheet_id, DataManager.AVAILABE_RANGE)
         flights = self._read_flights(read_range)
 
         # Return amount of flights
@@ -172,7 +250,8 @@ class DataManager:
         """
         self.logger.debug(f'Reading flights data...')
         # Call the Sheets API to read the data
-        read_range = self._prepare_range(f'FROM: {start_location}', DataManager.AVAILABE_RANGE)
+        sheet_id = self._prepare_sheet_id(start_location)
+        read_range = self._prepare_range(sheet_id, DataManager.AVAILABE_RANGE)
         values = self._read_data(read_range)
 
         self.logger.debug(f'Collected all flights data')
@@ -199,9 +278,13 @@ class DataManager:
             self.logger.error('add_flight: No data to add')
             return
 
+        # Check if sheet exists
+        sheet_id = self._prepare_sheet_id(flight["start_iataCode"])
+        if not self._check_if_sheet_exists(sheet_id):
+            self._create_sheet(sheet_id)
+
         # Call the Sheets API to add the data
-        status = self._append_data(f'FROM: {flight["start_iataCode"]}',
-                                   [[flight['dest_iataCode'], flight['lowestPrice']]])
+        status = self._append_data(sheet_id,[[flight['dest_iataCode'], flight['lowestPrice']]])
 
         if status:
             self.logger.debug(f'Flight data added')
@@ -233,6 +316,12 @@ class DataManager:
             f'Updating flight data: {flight["start_iataCode"]}->{flight["dest_iataCode"]} with price {flight["lowestPrice"]}'
         )
 
+        # Check if start location exists in the sheet
+        if not self._check_if_sheet_exists(self._prepare_sheet_id(flight["start_iataCode"])):
+            self.logger.debug(f'update_flight: There is no sheet for iata code `{flight["start_iataCode"]}`, creating new')
+            self._add_flight(flight)
+            return
+
         # Get range to update
         row_number = -1
         existing_values = self._read_flights(flight['start_iataCode'])
@@ -249,7 +338,8 @@ class DataManager:
             return
 
         # Call the Sheets API to update the data
-        update_range = self._prepare_range(f'FROM: {flight["start_iataCode"]}', f'B{row_number}')
+        sheet_id = self._prepare_sheet_id(flight["start_iataCode"])
+        update_range = self._prepare_range(sheet_id, f'B{row_number}')
         status = self._update_data([[flight['lowestPrice']]], update_range)
 
         if status:
@@ -270,21 +360,29 @@ class DataManager:
 
 
 # TEST CODE
-# if __name__ == '__main__':
-#     SPREADSHEET_ID = '1QfA56f4agDyDdPsrTYYbEF0uDOwgIyJJgHS8jwWteDs'
-#     x = DataManager(SPREADSHEET_ID)
-#
-#     gda_waw_update = DataManager.get_flight_dict('GDA', 'WAW', 21500)
-#     x.update_flight(gda_waw_update)
-#
-#     print(f"The least cost for flight to Berlin is: {x.get_flight_data('GDA', 'BER')}$")
-#
-#     gda_ber_update = DataManager.get_flight_dict('GDA', 'BER', 36522)
-#     x.update_flight(gda_ber_update)
-#
-#     gda_ny_update = DataManager.get_flight_dict('GDA', 'NY', 236522)
-#     x.update_flight(gda_ny_update)
-#
-#     print(f"The least cost for flight to Warsaw is: {x.get_flight_data('GDA', 'WAW')}$")
-#     print(f"The least cost for flight to New York is: {x.get_flight_data('GDA', 'NY')}$")
-#     print(f"The least cost for flight to Paris is: {x.get_flight_data('GDA', 'PAR')}$")
+if __name__ == '__main__':
+    SPREADSHEET_ID = '1QfA56f4agDyDdPsrTYYbEF0uDOwgIyJJgHS8jwWteDs'
+    x = DataManager(SPREADSHEET_ID)
+
+    par_ber_update = DataManager.get_flight_dict('PAR', 'BER', 150)
+    x.update_flight(par_ber_update)
+
+    kyi_ber_update = DataManager.get_flight_dict('KYI', 'BER', 1234)
+    x.update_flight(kyi_ber_update)
+
+    x.get_flight_data('KYI', 'BER')
+
+    gda_waw_update = DataManager.get_flight_dict('GDA', 'WAW', 21550)
+    x.update_flight(gda_waw_update)
+
+    print(f"The least cost for flight to Berlin is: {x.get_flight_data('GDA', 'BER')}$")
+
+    gda_ber_update = DataManager.get_flight_dict('GDA', 'BER', 36522)
+    x.update_flight(gda_ber_update)
+
+    gda_ny_update = DataManager.get_flight_dict('GDA', 'NY', 1236522)
+    x.update_flight(gda_ny_update)
+
+    print(f"The least cost for flight to Warsaw is: {x.get_flight_data('GDA', 'WAW')}$")
+    print(f"The least cost for flight to New York is: {x.get_flight_data('GDA', 'NY')}$")
+    print(f"The least cost for flight to Paris is: {x.get_flight_data('GDA', 'PAR')}$")

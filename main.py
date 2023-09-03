@@ -7,5 +7,9 @@ from notification_manager import NotificationManager
 from log_module import ProjectLogger
 
 
-logger = ProjectLogger().setup_main_logger()
-SPREADSHEET_ID = '1QfA56f4agDyDdPsrTYYbEF0uDOwgIyJJgHS8jwWteDs'
+if __name__ == '__main__':
+    logger = ProjectLogger().setup_main_logger()
+    data_manager = DataManager()
+    config = data_manager.get_config()
+    flight_search = FlightSearch(config['tequila_api_key'])
+    config = data_manager.get_config()

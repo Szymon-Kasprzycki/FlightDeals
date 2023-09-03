@@ -160,6 +160,8 @@ cython_debug/
 .idea/
 
 # My specific files and dirs
+.config/
+config.json
 token.json
-client_secret.json
+.config/client_secret.json
 flights_deal.log

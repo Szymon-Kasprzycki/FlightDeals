@@ -10,13 +10,13 @@ class ProjectLogger:
     It uses static methods to create a logger for the main file and for each module.
     """
     PROJECT_NAME = 'FlightsDeal'
-    FORMATTER = logging.Formatter("%(asctime)s %(name)-30s %(levelname)-8s %(message)s")
+    FORMATTER = logging.Formatter("%(asctime)s %(name)-35s %(levelname)-8s %(message)s")
     FILE_HANDLER_LEVEL = logging.DEBUG
     CONSOLE_HANDLER_LEVEL = logging.INFO
     FILE_NAME = 'flights_deal.log'
 
     @staticmethod
-    def prepare_handlers() -> tuple:
+    def _prepare_handlers() -> tuple:
         """
         This method prepares handlers for the logger.
         """
@@ -38,8 +38,8 @@ class ProjectLogger:
             file.write('')
         logger = logging.getLogger(ProjectLogger.PROJECT_NAME)
         logger.setLevel(logging.DEBUG)
-        handlers = ProjectLogger.prepare_handlers()
-        logger.addHandler(handlers[0])
+        handlers = ProjectLogger._prepare_handlers()
+        # logger.addHandler(handlers[0]) # uncomment this line to enable console logging
         logger.addHandler(handlers[1])
         return logger
 
@@ -53,7 +53,7 @@ class ProjectLogger:
         logger = logging.getLogger(ProjectLogger.PROJECT_NAME + '.' + module_name)
         logger.setLevel(logging.DEBUG)
         if not logger.hasHandlers():
-            handlers = ProjectLogger.prepare_handlers()
-            logger.addHandler(handlers[0])
+            handlers = ProjectLogger._prepare_handlers()
+            # logger.addHandler(handlers[0]) # uncomment this line to enable console logging
             logger.addHandler(handlers[1])
         return logger

@@ -17,6 +17,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from log_module import ProjectLogger
+from flight_data import FlightData
 
 
 class DataManager:
@@ -31,36 +32,10 @@ class DataManager:
     def __init__(self):
         # create new logger for DataManager
         self._logger = ProjectLogger().get_module_logger('DataManager')
-
         self._config = self._check_if_config_folder_exists()
-
         self._logger.debug('Initializing DataManager...')
         self._spreadsheet_id = self._config['google_sheet_id']
-
-        # Check if token file exists, if it does, load credentials from file
-        if os.path.exists(self._config['google_token_file']):
-            self._creds = Credentials.from_authorized_user_file(self._config['google_token_file'], DataManager.API_SCOPES)
-            self._logger.debug('Google credentials loaded from file')
-
-        # If there are no (valid) credentials available, let the user log in using OAuth.
-        if not self._creds or not self._creds.valid:
-            if self._creds and self._creds.expired and self._creds.refresh_token:
-                # If credentials are expired, but refresh token is available, refresh credentials
-                self._logger.debug('Credentials expired, refreshing...')
-                self._creds.refresh(Request())
-                self._logger.debug('Credentials refreshed')
-            else:
-                # If credentials are not available, create new credentials
-                self._logger.debug('Credentials not available, creating new...')
-                flow = InstalledAppFlow.from_client_secrets_file(self._config['google_credentials_file'],
-                                                                 DataManager.API_SCOPES)
-                self._creds = flow.run_local_server(port=0)
-                self._logger.debug('Credentials created')
-            # Save the credentials for the next run
-            with open(self._config['google_token_file'], 'w+') as token:
-                token.write(self._creds.to_json())
-                self._logger.debug('Credentials saved to file')
-
+        self._handle_credentials()
         try:
             # Build the Google service
             service = build(DataManager.API_SERVICE_NAME, DataManager.API_VERSION, credentials=self._creds)
@@ -102,6 +77,38 @@ class DataManager:
         """
         return {'origin_airport': start_location, 'destination_airport': destination, 'price': price}
 
+    def _handle_credentials(self) -> None:
+        """
+        This method handles the Google credentials for the application.
+        It checks if the token file exists, if it does, it loads the credentials from file.
+        If there are no credentials, it creates new ones.
+        :return: None
+        """
+        # Check if token file exists, if it does, load credentials from file
+        if os.path.exists(self._config['google_token_file']):
+            self._creds = Credentials.from_authorized_user_file(self._config['google_token_file'],
+                                                                DataManager.API_SCOPES)
+            self._logger.debug('Google credentials loaded from file')
+
+        # If there are no (valid) credentials available, let the user log in using OAuth.
+        if not self._creds or not self._creds.valid:
+            if self._creds and self._creds.expired and self._creds.refresh_token:
+                # If credentials are expired, but refresh token is available, refresh credentials
+                self._logger.debug('Credentials expired, refreshing...')
+                self._creds.refresh(Request())
+                self._logger.debug('Credentials refreshed')
+            else:
+                # If credentials are not available, create new credentials
+                self._logger.debug('Credentials not available, creating new...')
+                flow = InstalledAppFlow.from_client_secrets_file(self._config['google_credentials_file'],
+                                                                 DataManager.API_SCOPES)
+                self._creds = flow.run_local_server(port=0)
+                self._logger.debug('Credentials created')
+            # Save the credentials for the next run
+            with open(self._config['google_token_file'], 'w+') as token:
+                token.write(self._creds.to_json())
+                self._logger.debug('Credentials saved to file')
+
     def _check_if_config_folder_exists(self) -> dict:
         """
         This function checks if config folder exists. If not, it creates it.
@@ -135,7 +142,6 @@ class DataManager:
                 f.write('')
 
         if not os.path.exists(config['google_credentials_file']):
-            print("XD")
             self._logger.error(
                 'Google credentials file does not exist! Please download it from Google Cloud Platform and put it in .config folder. Name it `client_secret.json` and try again.')
 
@@ -145,7 +151,7 @@ class DataManager:
 
     def get_config(self) -> dict:
         """
-        This method returns the config dictionary
+        This method returns the json setup for the application
         :return: config dictionary with `tequila_api_key`, `google_token_file`, `google_credentials_file` and `google_sheet_id`
         """
         return self._config
@@ -184,25 +190,18 @@ class DataManager:
         """
         This method checks if the sheet exists in the connected Google spreadsheet
         :param sheet_id: Sheet id to be checked e.g. 'Sheet1'
-        :return: True if sheet exists, False otherwise
+        :return: True if a sheet exists, False otherwise
         """
         status = False
 
         self._logger.debug(f'Checking if sheet {sheet_id} exists')
 
         # Call the Sheets API to get the list of sheets
-        try:
-            self._logger.debug(f'Calling Sheets API to get the list of sheets')
-            result = self._sheet.get(spreadsheetId=self._spreadsheet_id).execute()
-            sheets = result.get('sheets', [])
-            self._logger.debug(f'{len(sheets)} sheets found')
-        except HttpError as err:
-            self._logger.error(err)
-            sheets = []
+        sheets = self.get_start_locations()
 
         # Check if sheet exists
         for sheet in sheets:
-            if sheet['properties']['title'] == sheet_id:
+            if f'FROM_{sheet}' == sheet_id:
                 status = True
                 break
 
@@ -326,14 +325,14 @@ class DataManager:
 
         return flights
 
-    def _add_flight(self, flight: dict) -> None:
+    def _add_flight(self, flight: FlightData) -> None:
         """
         This method adds the new flight data to the connected Google spreadsheet
         :param flight: Flight data to add e.g. {'start_iata_code': 'ABC', dest_iata_code': 'ABC', 'lowestPrice': 123}
         :return: True if data added, False otherwise
         """
         self._logger.debug(
-            f'Adding flight data: {flight["origin_airport"]}->{flight["destination_airport"]} with price {flight["price"]}$'
+            f'Adding flight data: {flight.origin_airport}->{flight.destination_airport} with price {flight.price}$'
         )
 
         # Check if there is data to add
@@ -342,78 +341,111 @@ class DataManager:
             return
 
         # Check if sheet exists
-        sheet_id = self._prepare_sheet_id(flight["origin_airport"])
+        sheet_id = self._prepare_sheet_id(flight.origin_airport)
         if not self._check_if_sheet_exists(sheet_id):
             self._create_sheet(sheet_id)
 
         # Call the Sheets API to add the data
-        status = self._append_data(sheet_id, [[flight['destination_airport'], flight['price']]])
+        status = self._append_data(sheet_id, [[flight.destination_airport, flight.price]])
 
         if status:
             self._logger.debug(f'Flight data added')
         else:
             self._logger.error(f'Flight data not added')
 
-    def get_flight_data(self, start_location: str, destination: str) -> dict:
+    def get_start_locations(self) -> list:
+        """
+        This method reads all start_locations from the connected Google spreadsheet
+        :return: list of start locations IATA codes
+        """
+        # Call the Sheets API to get the list of sheets
+        try:
+            self._logger.debug(f'Calling Sheets API to get the list of sheets')
+            result = self._sheet.get(spreadsheetId=self._spreadsheet_id).execute()
+            sheets = result.get('sheets', [])
+            self._logger.debug(f'{len(sheets)} sheets found')
+        except HttpError as err:
+            self._logger.error(err)
+            sheets = []
+
+        return [sheet['properties']['title'].replace('FROM_', '') for sheet in sheets]
+
+    def get_destination_airports(self, start_location: str) -> list:
+        """
+        This method reads all destinations for given start location from the connected Google spreadsheet
+        :param start_location: start location IATA code
+        :return: list of destinations IATA codes
+        """
+        self._logger.debug(f'Reading destinations for {start_location}...')
+        # Call the Sheets API to read the data
+        sheet_id = self._prepare_sheet_id(start_location)
+        read_range = self._prepare_range(sheet_id, DataManager.AVAILABLE_RANGE)
+        values = self._read_data(read_range)
+        destinations = [row[0] for row in values]
+
+        # Return list of destinations
+        self._logger.debug(f'Destinations for {start_location}: {destinations}')
+        return destinations
+
+    def get_flight_data(self, data: FlightData) -> dict:
         """
         This method reads the flight data (by iata code) from the connected Google sheet
-        :param start_location: start location IATA code
-        :param destination: destination IATA code
+        :param data: See FlightData class for more information.
         :return: dictionary of certain flight data {'iataCode': 'lowestPrice'}
         :raises ValueError: if there is no flight data for given start and destination
         """
-        flights = self._read_flights(start_location=start_location)
+        flights = self._read_flights(start_location=data.origin_airport)
 
-        if destination not in flights.keys():
-            self._logger.error(f'No flight data found for {start_location}->{destination}')
-            raise ValueError(f'No flight data found for {start_location}->{destination}')
+        if data.destination_airport not in flights.keys():
+            self._logger.error(f'No flight data found for {data.origin_airport}->{data.destination_airport}')
+            return {}
 
-        return flights.get(destination)
+        return flights.get(data.destination_airport)
 
-    def update_flight(self, start: str, dest: str, price: int) -> None:
+    def update_flight(self, flight: FlightData) -> int:
         """
         This method updates the flight data in the connected Google sheet
-        :param price:
-        :param dest:
-        :param start: Flight data to update e.g. {'start_iata_code': 'ABC', 'dest_iata_code': 'ABC', 'lowestPrice': 123}
-        :return: None
+        :param flight: See FlightData class for more information.
+        :return: status code (0 - updated with lower price, 1 - not updated)
         :raises ValueError: if error occurred during update process
         """
+        status = False
+
         self._logger.info(
-            f'Updating flight data: {start}->{dest} with price {price}'
+            f'Updating flight data: {flight.origin_airport}->{flight.destination_airport} with price {flight.price}'
         )
 
-        flight = self.get_flight_dict(start, dest, price)
-
         # Check if start location exists in the sheet
-        if not self._check_if_sheet_exists(self._prepare_sheet_id(flight["origin_airport"])):
+        if not self._check_if_sheet_exists(self._prepare_sheet_id(flight.origin_airport)):
             self._logger.debug(
-                f'update_flight: There is no sheet for iata code `{flight["origin_airport"]}`, creating new')
+                f'update_flight: There is no sheet for iata code `{flight.origin_airport}`, creating new')
             self._add_flight(flight)
-            return
+            return 0
 
         # Get range to update
         row_number = -1
-        existing_values = self._read_flights(flight['origin_airport'])
+        existing_values = self._read_flights(flight.origin_airport)
         for nr, row in enumerate(existing_values.keys()):
-            if row == flight['destination_airport']:
-                self._logger.debug(f'Found existing entry for `{flight["destination_airport"]}`')
+            if row == flight.destination_airport:
+                self._logger.debug(f'Found existing entry for `{flight.destination_airport}`')
                 row_number = nr + 1
                 break
 
         # Add new data if there is no data for this destination
         if row_number == -1:
-            self._logger.debug(f'update_flight: No data for iata code `{flight["destination_airport"]}`')
+            self._logger.debug(f'update_flight: No data for iata code `{flight.destination_airport}`')
             self._add_flight(flight)
-            return
+            return 0
 
         # Call the Sheets API to update the data
-        sheet_id = self._prepare_sheet_id(flight["origin_airport"])
+        sheet_id = self._prepare_sheet_id(flight.origin_airport)
         update_range = self._prepare_range(sheet_id, f'B{row_number}')
-        status = self._update_data([[flight['price']]], update_range)
 
-        if status:
-            self._logger.info(f'Flight data updated')
+        # Check if price is lower than existing one
+        if flight.price < existing_values[flight.destination_airport]:
+            self._logger.debug(f'update_flight: New price is lower than existing one, updating...')
+            status = self._update_data([[flight.price]], update_range)
         else:
-            self._logger.error(f'Flight data not updated')
-            raise ValueError(f'Flight data not updated')
+            self._logger.debug(f'update_flight: New price is higher than existing one, not updating...')
+
+        return 0 if status else 1
